@@ -1,0 +1,11 @@
+icecream
+numpy
+scipy
+matplotlib
+control
+casadi
+mpt4py==0.1.5
+jupyter
+ipympl
+--find-links https://github.com/PREDICT-EPFL/MPC-Course-EPFL/releases/expanded_assets/mpt4py_wheels
+--find-links https://github.com/PREDICT-EPFL/MPC-Course-EPFL/releases/expanded_assets/pycddlib_wheels
