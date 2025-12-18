@@ -51,6 +51,8 @@ class Rocket(RocketBase):
     model_params_filepath: Optional[str]
     Ts: float  # sampling time [s]
 
+    controller_type: str = 'lmpc'
+
 
     def f(self, x: np.ndarray, u: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """Compute state derivative and outputs.
@@ -135,7 +137,9 @@ class Rocket(RocketBase):
         b_F, b_M = self.getForceAndMomentFromThrust_symbolic(u)
 
         # Angular acceleration
-        w_dot = ca.solve(ca.DM(self.J), (b_M - ca.cross(w, ca.DM(self.J) @ w)))
+        J = ca.DM(self.J)
+        Jinv = ca.DM(np.linalg.inv(self.J))
+        w_dot = Jinv @ (b_M - ca.cross(w, J @ w))
 
         # Euler angle rates
         alp, bet, gam = r[0], r[1], r[2]
@@ -285,7 +289,7 @@ class Rocket(RocketBase):
         B_num = np.array(fB(xs, us))
 
         sys = LTISys(A_num, B_num, xs=xs, us=us)
-        self.sys = sys
+        # self.sys = sys
 
         return sys
 
@@ -479,10 +483,17 @@ class Rocket(RocketBase):
 
         x_cl[:, 0] = x0  # initial state
 
+        self.controller_type = mpc.__class__.__name__
+        # print(self.controller_type)
+
         if method =='nonlinear_real':
             realistic_rocket = perturb_rocket(self)
             # Closed-loop simulation
             for k in range(N_cl):
+                # flush not work due to cvxpy warning; tqdm need new package
+                if k % 20 == 0:  # every 20 steps
+                    print(f"Simulating time {t_cl[k]:.2f}")
+
                 # setpoint_closed_loop[6:9, k] = setpoint_controller.get_u(x_traj_closed_loop[9:12, k])
                 u_cl[:, k], x_ol[..., k], u_ol[..., k], t_ol[..., k] = mpc.get_u(t_cl[k], x_cl[:, k])
                 x_cl[:, k+1] = realistic_rocket.simulate_step(x_cl[:, k], self.Ts, u_cl[:, k], method='nonlinear')
@@ -490,6 +501,10 @@ class Rocket(RocketBase):
         else:
             # Closed-loop simulation
             for k in range(N_cl):
+                # flush not work due to cvxpy warning; tqdm need new package
+                if k % 20 == 0:  # every 20 steps
+                    print(f"Simulating time {t_cl[k]:.2f}")
+                
                 # setpoint_closed_loop[6:9, k] = setpoint_controller.get_u(x_traj_closed_loop[9:12, k])
                 u_cl[:, k], x_ol[..., k], u_ol[..., k], t_ol[..., k] = mpc.get_u(t_cl[k], x_cl[:, k])
                 x_cl[:, k+1] = self.simulate_step(x_cl[:, k], self.Ts, u_cl[:, k], method=method)
@@ -523,8 +538,12 @@ class Rocket(RocketBase):
                 raise ValueError("Invalid flag value")
         return noise["w"]	
     
-    def simulate_step_dt(obj, x, u, w, mpc):
+    def simulate_step_dt(self, x, u, w, mpc):
         """use discrete-time model"""
+
+        # Hard coding for sys_z and robust MPC only: changed in the future
+        if constraint_check_sysZ(x, u):
+            raise ValueError("Constraints violation detected, terminating...")
         xs, us = mpc.xs, mpc.us
         A, B = mpc.A, mpc.B
         x_next = A @ (x-xs) + B @ (u - us + w) + xs
@@ -534,10 +553,12 @@ class Rocket(RocketBase):
         """Simulation with one linearized subsystem only"""
         Ts = self.Ts
         match w_type:
-            case "type_1":
+            case "random":
                 flag_noise = 1
-            case "type_2":
+            case "extreme":
                 flag_noise = 2
+            case "no_noise":
+                flag_noise = 0
             case _:
                 raise ValueError(f"Unknown w type: {w_type}")	
         w_traj_cl = self.add_noise(flag_noise, sim_time)
@@ -555,6 +576,26 @@ class Rocket(RocketBase):
             t_cl[k+1] = t_cl[k] + Ts		
 
         return t_cl, x_cl, u_cl
+    
+def constraint_check_sysZ(x: np.ndarray, u: np.ndarray) -> bool:
+    """Check if state x amd input u satisfy constraints for sys_z
+    """
+    LBU = np.array([40.0])  # [Pavg]
+    UBU = np.array([80.0])  # [Pavg]
+
+    LBX = np.array([-np.inf, 0.0]) # [vz, z]
+    UBX = np.array([ np.inf, np.inf]) # # [vz, z]
+    
+    terminate = False
+    if np.any(u < LBU-1e-5) or np.any(u > UBU+1e-5):
+        print(f"Input violation: Pavg={u}, [LBU, UBU]={LBU, UBU}")
+        terminate = True
+
+    if np.any(x < LBX-1e-5) or np.any(x > UBX+1e-5):
+        print(f"State violation: [vz,z]={x}, [LBX, UBX]={LBX, UBX}")
+        terminate = True
+
+    return terminate    
     
 
 def perturb_rocket(rocket, seed: int | None = 1):
@@ -600,21 +641,35 @@ def constraint_check(rocket, x: np.ndarray, u: np.ndarray) -> bool:
                     np.inf,  np.inf,  np.inf,
                     np.inf,  np.inf, np.inf]) # [wx, wy, wz, alpha, beta, gamma, vx, vy, vz, x, y, z]
     
+    if rocket.controller_type == 'NmpcCtrl':
+        LBU = np.array([-np.deg2rad(15), -np.deg2rad(15), 10.0, -20.0])  # [dR, dP, Pavg, Pdiff]
+        UBU = np.array([ np.deg2rad(15),  np.deg2rad(15), 90.0,  20.0])  # [dR, dP, Pavg, Pdiff]  
+
+        # |beta|<=80
+        LBX = np.array([-np.inf, -np.inf, -np.inf,
+                        -np.inf, -np.deg2rad(80), -np.inf,
+                        -np.inf, -np.inf, -np.inf,
+                        -np.inf, -np.inf, 0.0]) # [wx, wy, wz, alpha, beta, gamma, vx, vy, vz, x, y, z] 
+        UBX = np.array([np.inf,  np.inf,  np.inf,
+                        np.inf,  np.deg2rad(80),  np.inf,
+                        np.inf,  np.inf,  np.inf,
+                        np.inf,  np.inf, np.inf]) # [wx, wy, wz, alpha, beta, gamma, vx, vy, vz, x, y, z]
+                  
     terminate = False
     if np.any(u < LBU-1e-5):
         for index in np.where(u < LBU-1e-5)[0]:
-            print(f"Input {rocket.sys['InputName'][index]} violation: {u[index]:.2f} < {LBU[index]:.2f}", end=', ')
+            print(f"\n Input {rocket.sys['InputName'][index]} violation: {u[index]:.2f} < {LBU[index]:.2f}", end=', ')
         terminate = True
     if np.any(u > UBU+1e-5):
         for index in np.where(u > UBU+1e-5)[0]:
-            print(f"Input {rocket.sys['InputName'][index]} violation: {u[index]:.2f} > {UBU[index]:.2f}", end=', ')
+            print(f"\n Input {rocket.sys['InputName'][index]} violation: {u[index]:.2f} > {UBU[index]:.2f}", end=', ')
         terminate = True
     if np.any(x < LBX-1e-5):
         for index in np.where(x < LBX-1e-5)[0]:
-            print(f"State {rocket.sys['StateName'][index]} violation: {x[index]:.2f} < {LBX[index]:.2f}", end=', ')
+            print(f"\n State {rocket.sys['StateName'][index]} violation: {x[index]:.2f} < {LBX[index]:.2f}", end=', ')
     if np.any(x > UBX+1e-5):
         for index in np.where(x > UBX+1e-5)[0]:
-            print(f"State {rocket.sys['StateName'][index]} violation: {x[index]:.2f} > {UBX[index]:.2f}", end=', ')
+            print(f"\n State {rocket.sys['StateName'][index]} violation: {x[index]:.2f} > {UBX[index]:.2f}", end=', ')
 
     return terminate
 

@@ -3,47 +3,31 @@ import numpy as np
 from src.rocket import Rocket
 
 from .MPCControl_roll import MPCControl_roll
-from .MPCControl_xvel import MPCControl_xvel
-from .MPCControl_yvel import MPCControl_yvel
-from .MPCControl_zvel import MPCControl_zvel
+from .MPCControl_x import MPCControl_x
+from .MPCControl_y import MPCControl_y
+from .MPCControl_z import MPCControl_z
 
 
-class MPCVelControl:
-    mpc_x: MPCControl_xvel
-    mpc_y: MPCControl_yvel
-    mpc_z: MPCControl_zvel
+class MPCLandControl:
+    mpc_x: MPCControl_x
+    mpc_y: MPCControl_y
+    mpc_z: MPCControl_z
     mpc_roll: MPCControl_roll
 
     def __init__(self) -> None:
         pass
 
-    def new_controller(self, rocket: Rocket, Ts: float, H: float) -> None:
-        self.xs, self.us = rocket.trim()
+    def new_controller(self, rocket: Rocket, Ts: float, H: float, x_ref: np.ndarray) -> None:
+        self.xs, self.us = rocket.trim(x_ref)
         A, B = rocket.linearize(self.xs, self.us)
 
-        self.mpc_x = MPCControl_xvel(A, B, self.xs, self.us, Ts, H)
-        self.mpc_y = MPCControl_yvel(A, B, self.xs, self.us, Ts, H)
-        self.mpc_z = MPCControl_zvel(A, B, self.xs, self.us, Ts, H)
+        self.mpc_x = MPCControl_x(A, B, self.xs, self.us, Ts, H)
+        self.mpc_y = MPCControl_y(A, B, self.xs, self.us, Ts, H)
+        self.mpc_z = MPCControl_z(A, B, self.xs, self.us, Ts, H)
         self.mpc_roll = MPCControl_roll(A, B, self.xs, self.us, Ts, H)
 
         return self
 
-    def load_controllers(
-        self,
-        mpc_x: MPCControl_xvel,
-        mpc_y: MPCControl_yvel,
-        mpc_z: MPCControl_zvel,
-        mpc_roll: MPCControl_roll,
-    ) -> None:
-        self.mpc_x = mpc_x
-        self.mpc_y = mpc_y
-        self.mpc_z = mpc_z
-        self.mpc_roll = mpc_roll
-
-        return self
-
-    def estimate_parameters(self, x_data: np.ndarray, u_data: np.ndarray) -> None:
-        return
 
     def get_u(
         self,

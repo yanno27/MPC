@@ -48,18 +48,18 @@ class RocketVis:
             "dP": (-20, +20),
             "dF": (30, 100),
             "dFdiff": (-30, 30),
-            "wx": (-30, 30),
-            "wy": (-30, 30),
-            "wz": (-30, 30),
-            "roll": (-20, 20),
-            "pitch": (-20, 20),
+            "wx": (-300, 300),
+            "wy": (-300, 300),
+            "wz": (-100, 100),
+            "roll": (-100, 100),
+            "pitch": (-100, 100),
             "yaw": (-100, 100),
-            "vE": (-20, 20),
-            "vN": (-20, 20),
-            "vU": (-20, 20),
-            "posE": (-10, 50),
-            "posN": (-10, 50),
-            "posU": (-10, 50),
+            "vE": (-5, 5),
+            "vN": (-5, 5),
+            "vU": (-7, 7),
+            "posE": (-0, 4),
+            "posN": (-1, 3),
+            "posU": (-0, 11),
         }
 
 
@@ -99,7 +99,6 @@ class RocketVis:
 
         # vN, vE, vD
         for idx, lbl in zip([6, 7, 8], ["vE", "vN", "vU"]):
-            ax_list[4+idx].get_xaxis().set_visible(False)
             ax_list[4+idx].set_ylim(self.y_ranges[lbl])
             h_cl = ax_list[4+idx].plot(T, X[idx, :] if X.size else [], color=color or self.color_traj)[0]
             h_ol = ax_list[4+idx].plot([], [], color=color or self.color_ol)[0]
@@ -112,7 +111,6 @@ class RocketVis:
             hnd[f"p_{lbl}"] = p
         # wx, wy, wz
         for idx, lbl in zip([0, 1, 2], ["wx", "wy", "wz"]):
-            ax_list[4+idx].get_xaxis().set_visible(False)
             ax_list[4+idx].set_ylim(self.y_ranges[lbl])
             h_cl = ax_list[4+idx].plot(T, np.rad2deg(X[idx, :]) if X.size else [], color=color or self.color_traj)[0]
             h_ol = ax_list[4+idx].plot([], [], color=color or self.color_ol)[0]
@@ -125,7 +123,6 @@ class RocketVis:
             hnd[f"p_{lbl}"] = p
         # posN, posE, posD
         for idx, lbl in zip([9, 10, 11], ["posE", "posN", "posU"]):
-            ax_list[4+idx].get_xaxis().set_visible(False)
             ax_list[4+idx].set_ylim(self.y_ranges[lbl])
             h_cl = ax_list[4+idx].plot(T, X[idx, :] if X.size else [], color=color or self.color_traj)[0]
             p = ax_list[4+idx].plot(T[0], X[idx, 0], marker="o", color="red")[0]
@@ -134,7 +131,6 @@ class RocketVis:
             hnd[f"p_{lbl}"] = p
         # roll, pitch, yaw
         for idx, lbl in zip([3, 4, 5], ["roll", "pitch", "yaw"]):
-            ax_list[4+idx].get_xaxis().set_visible(False)
             ax_list[4+idx].set_ylim(self.y_ranges[lbl])
             h_cl = ax_list[4+idx].plot(T, np.rad2deg(X[idx, :]) if X.size else [], color=color or self.color_traj)[0]
             h_ol = ax_list[4+idx].plot([], [], color=color or self.color_ol)[0]
@@ -353,10 +349,10 @@ class RocketVis:
         axes: List[plt.Axes] = []
         
         # Mapping for time series plots
-        state_mapping = [(0,1),(0,0),(0,3),(1,1),(1,0),(1,3),(2,0),(2,1),(2,2),(3,0),(3,1),(3,2)]
+        state_mapping = [(0,1),(0,0),(0,2),(1,1),(1,0),(1,3),(2,0),(2,1),(2,2),(3,0),(3,1),(3,2)]
         inputs_mapping = [(4,0),(4,1),(4,2),(4,3)]
         for r, c in inputs_mapping + state_mapping:
-            ax = fig.add_subplot(gs[r, c], sharex = axes[0] if axes else None)
+            ax = fig.add_subplot(gs[r, c])
             ax.grid(True)
             axes.append(ax)
 
@@ -367,15 +363,15 @@ class RocketVis:
         # Set titles
         axes[5].set_title("Subsystem X")
         axes[4].set_title("Subsystem Y")
-        axes[12].set_title("Subsystem Z")
-        axes[6].set_title("Subsystem Roll")
+        axes[6].set_title("Subsystem Z")
+        axes[9].set_title("Subsystem Roll")
 
         # Set y-labels
         axes[0].set_ylabel("inputs")
-        axes[5].set_ylabel(r"$\omega_{\alpha\beta\gamma}$ (deg/s)")
-        axes[8].set_ylabel(r"$\alpha\beta\gamma$ (deg)")
-        axes[10].set_ylabel(r"$v$ (m/s)")
-        axes[13].set_ylabel(r"$\text{pos}$ (m)")
+        axes[5].set_ylabel(r"$\omega_{\phi\theta\psi}$ (deg/s)")
+        axes[8].set_ylabel(r"$\phi\theta\psi$ (deg)")
+        axes[10].set_ylabel("$v_{\\text{ENU}}$ (m/s)")
+        axes[13].set_ylabel("$\\text{pos}_{\\text{ENU}}$ (m)")
         
 
         # matplotlib_widget = widgets.Output()
@@ -387,11 +383,6 @@ class RocketVis:
 
         def update_callback(change):
             # with plotter:
-            if self._update_running:
-                print("Skipping update to avoid overlap")
-                return
-            
-            self._update_running = True
             value = change['new']
             pos = np.array([X[9, value], X[10, value], X[11, value]])  # E,N,U 
             angles = X[3:6, value]      # (alpha, beta, gamma)
@@ -405,9 +396,8 @@ class RocketVis:
                 self._update_plot(hnd, axes, X[:, value], U[:, value], X_ol[..., value], U_ol[..., value], T_ol[..., value])
             else:
                 self._update_plot(hnd, axes, X[:, value], U[:, value], t_ol=T[value:value+1])
-            self._update_running = False
 
-        self._update_running = False
+
         self.plotter, self.scene_objects = self._create_3d_scene()
         pyvista_widget = self.plotter.show(auto_close=False, interactive_update=True, return_viewer=True, jupyter_backend='client')
 
@@ -418,7 +408,7 @@ class RocketVis:
         slider = widgets.IntSlider(min=0, max=T.shape[0]-1)
         widgets.jslink((play, 'value'), (slider, 'value'))
 
-        slider.observe(update_callback, names='value')
+        play.observe(update_callback, names='value')
 
         layout = widgets.AppLayout(
             left_sidebar=fig.canvas, 
@@ -461,11 +451,15 @@ class RocketVis:
             # "time_text": time_text,
         }
 
+    
+import numpy as np
+import matplotlib.pyplot as plt
+
 
 def plot_static_states_inputs(T, X, U, Ref=None, type=None):
     """Plot rocket subsystem states and inputs with constraints."""
 
-    if Ref is not None and Ref.ndim == 1:
+    if Ref is not None:
         N_cl = U.shape[1]
         Ref = np.tile(Ref[:, None], (1, N_cl))
 
@@ -494,6 +488,33 @@ def plot_static_states_inputs(T, X, U, Ref=None, type=None):
                 ax.axhline(y=val, linestyle='--', color='k', linewidth=0.8)
 
         ax.set_ylabel(f"{label} ({unit})")
+
+    # ========== Special case: only plot sys_z ==========
+    if type == 'sys_z':
+        fig, axes = plt.subplots(1, 3, figsize=(10, 3), sharex=True)
+        axes = np.atleast_1d(axes)
+
+        # sys_z: v_z, z, P_avg
+        labels_z = ["v_z", "z", "P_avg"]
+        units_z  = ["m/s", "m", "%"]
+        data_idx = [8, 11, None]
+
+        for i, (lab, unit, idx) in enumerate(zip(labels_z, units_z, data_idx)):
+            if lab == "P_avg":
+                ax = axes[i]
+                ax.plot(T, U[2, :], color="tab:red")
+                plot_with_unit(ax, T, U[2, :], lab, unit)
+            else:
+                ref_seq = Ref[idx, :] if (Ref is not None and lab == "z") else None
+                plot_with_unit(axes[i], T, X[idx, :], lab, unit, ref_seq)
+
+        for ax in axes:
+            ax.set_xlabel("Time (s)")
+
+        fig.tight_layout()
+        plt.show()
+        return
+    # ====================================================
 
     # Otherwise: plot all subsystems
     fig, axes = plt.subplots(5, 4, figsize=(12, 6), sharex=True)
