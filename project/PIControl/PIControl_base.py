@@ -1,8 +1,6 @@
 from typing import Tuple
 
-import cvxpy as cp
 import numpy as np
-from scipy.signal import cont2discrete
 
 
 class PIControl_base:

@@ -63,35 +63,35 @@ class MPCVelControl:
         if u_target is None:
             u_target = self.us
 
-        u0[self.mpc_x.u_ids], x_traj[self.mpc_x.x_ids], u_traj[self.mpc_x.u_ids] = (
-            self.mpc_x.get_u(
-                x0[self.mpc_x.x_ids],
-                x_target[self.mpc_x.x_ids],
-                u_target[self.mpc_x.u_ids],
-            )
-        )
-        u0[self.mpc_y.u_ids], x_traj[self.mpc_y.x_ids], u_traj[self.mpc_y.u_ids] = (
-            self.mpc_y.get_u(
-                x0[self.mpc_y.x_ids],
-                x_target[self.mpc_y.x_ids],
-                u_target[self.mpc_y.u_ids],
-            )
-        )
-        u0[self.mpc_z.u_ids], x_traj[self.mpc_z.x_ids], u_traj[self.mpc_z.u_ids] = (
-            self.mpc_z.get_u(
-                x0[self.mpc_z.x_ids],
-                x_target[self.mpc_z.x_ids],
-                u_target[self.mpc_z.u_ids],
-            )
-        )
-        (
-            u0[self.mpc_roll.u_ids],
-            x_traj[self.mpc_roll.x_ids],
-            u_traj[self.mpc_roll.u_ids],
-        ) = self.mpc_roll.get_u(
-            x0[self.mpc_roll.x_ids],
-            x_target[self.mpc_roll.x_ids],
-            u_target[self.mpc_roll.u_ids],
-        )
+        # Get control from each controller
+        u0_x, x_traj_x, u_traj_x = self.mpc_x.get_u(x0, x_target, u_target)
+        u0_y, x_traj_y, u_traj_y = self.mpc_y.get_u(x0, x_target, u_target)
+        u0_z, x_traj_z, u_traj_z = self.mpc_z.get_u(x0, x_target, u_target)
+        u0_roll, x_traj_roll, u_traj_roll = self.mpc_roll.get_u(x0, x_target, u_target)
+
+        # Assign to combined arrays
+        u0[self.mpc_x.u_ids] = u0_x
+        u0[self.mpc_y.u_ids] = u0_y
+        u0[self.mpc_z.u_ids] = u0_z
+        u0[self.mpc_roll.u_ids] = u0_roll
+
+        # Assign trajectories properly
+        for i, idx in enumerate(self.mpc_x.x_ids):
+            x_traj[idx, :] = x_traj_x[i, :]
+        for i, idx in enumerate(self.mpc_y.x_ids):
+            x_traj[idx, :] = x_traj_y[i, :]
+        for i, idx in enumerate(self.mpc_z.x_ids):
+            x_traj[idx, :] = x_traj_z[i, :]
+        for i, idx in enumerate(self.mpc_roll.x_ids):
+            x_traj[idx, :] = x_traj_roll[i, :]
+
+        for i, idx in enumerate(self.mpc_x.u_ids):
+            u_traj[idx, :] = u_traj_x[i, :]
+        for i, idx in enumerate(self.mpc_y.u_ids):
+            u_traj[idx, :] = u_traj_y[i, :]
+        for i, idx in enumerate(self.mpc_z.u_ids):
+            u_traj[idx, :] = u_traj_z[i, :]
+        for i, idx in enumerate(self.mpc_roll.u_ids):
+            u_traj[idx, :] = u_traj_roll[i, :]
 
         return u0, x_traj, u_traj, t_traj
