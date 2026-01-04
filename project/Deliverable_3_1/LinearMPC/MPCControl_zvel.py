@@ -17,9 +17,9 @@ class MPCControl_zvel(MPCControl_base):
         nx, nu = self.nx, self.nu
         N = self.N
         
-        # Tuning matrices
-        Q = np.array([[100.0]])  # State cost (vz)
-        R = np.array([[1.0]])    # Input cost (Pavg)
+        # Tuning matrices [vz]
+        Q = np.array([[100.0]])  
+        R = np.array([[1.0]])    
         
         # LQR terminal controller and cost
         K, Qf, _ = dlqr(self.A, self.B, Q, R)
@@ -61,13 +61,16 @@ class MPCControl_zvel(MPCControl_base):
         constraints = []
         constraints.append(x_var[:, 0] == x0_param)
         
+        # System dynamics
         for k in range(N):
             constraints.append(x_var[:, k + 1] == self.A @ x_var[:, k] + self.B @ u_var[:, k])
         
+        # Input constraints
         for k in range(N):
             constraints.append(u_var[:, k] >= u_min)
             constraints.append(u_var[:, k] <= u_max)
         
+        # Terminal constraint
         constraints.append(Xf.A @ x_var[:, N] <= Xf.b)
         
         # Optimization problem
@@ -114,6 +117,7 @@ class MPCControl_zvel(MPCControl_base):
         # Solve
         self.ocp.solve(solver=cp.CLARABEL, verbose=False)
         
+        # Check if solution is optimal
         if self.ocp.status != cp.OPTIMAL:
             print(f"Warning: Optimization problem status is {self.ocp.status}")
             u0 = np.zeros(self.nu)

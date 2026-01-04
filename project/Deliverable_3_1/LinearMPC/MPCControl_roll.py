@@ -17,7 +17,7 @@ class MPCControl_roll(MPCControl_base):
         nx, nu = self.nx, self.nu
         N = self.N
         
-        # Tuning matrices [ωz, γ]
+        # Tuning matrices [omega_z, gamma]
         Q = np.diag([50.0, 200.0])
         R = np.array([[1.0]])
         
@@ -61,6 +61,7 @@ class MPCControl_roll(MPCControl_base):
         constraints = []
         constraints.append(x_var[:, 0] == x0_param)
         
+        # System dynamics
         for k in range(N):
             constraints.append(x_var[:, k + 1] == self.A @ x_var[:, k] + self.B @ u_var[:, k])
         
@@ -116,6 +117,7 @@ class MPCControl_roll(MPCControl_base):
         # Solve
         self.ocp.solve(solver=cp.CLARABEL, verbose=False)
         
+        # Check if solution is optimal
         if self.ocp.status != cp.OPTIMAL:
             print(f"Warning: Optimization problem status is {self.ocp.status}")
             u0 = np.zeros(self.nu)
