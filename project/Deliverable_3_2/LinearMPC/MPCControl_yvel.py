@@ -11,35 +11,25 @@ class MPCControl_yvel(MPCControl_base):
     u_ids: np.ndarray = np.array([0])
 
     def _setup_controller(self) -> None:
-        #################################################
-        # YOUR CODE HERE
-        
         # State and input dimensions
         nx, nu = self.nx, self.nu
         N = self.N
-
         
-        # Build Q matrix
+        # Tuning matrices [omega_x, alpha, vy]
         Q = np.diag([1.0, 20.0, 50.0])
-        # ========================================================
+        R = np.array([[1.0]])
         
-        R = np.array([[1.0]])  # Input cost (servo deflection delta_1)
-        
-        # Compute LQR terminal controller and cost
+        # LQR terminal controller and cost
         K, Qf, _ = dlqr(self.A, self.B, Q, R)
         K = -K
         A_cl = self.A + self.B @ K
         
-        # Define constraints
-        # Roll angle alpha constraint: |alpha| <= 10 degrees = 0.1745 rad
-        alpha_max = 0.1745
-        
-        # Servo deflection delta_1: |delta_1| <= 15 degrees = 0.2618 rad
-        u_min = -0.2618 - self.us[0]
-        u_max = 0.2618 - self.us[0]
+        # Constraints
+        alpha_max = 0.1745  # 10 degrees
+        u_min = -0.2618 - self.us[0]  # -15 degrees
+        u_max = 0.2618 - self.us[0]   # +15 degrees
         
         # State constraints
-        # x = [omega_x, alpha, vy]
         F_x = np.array([
             [0, 1, 0],   # alpha <= alpha_max
             [0, -1, 0],  # -alpha <= alpha_max
@@ -56,18 +46,18 @@ class MPCControl_yvel(MPCControl_base):
         m_u = np.array([u_max, -u_min])
         U = Polyhedron.from_Hrep(M_u, m_u)
         
-        # Compute terminal invariant set
+        # Terminal invariant set
         KU = Polyhedron.from_Hrep(U.A @ K, U.b)
         Xf = self._max_invariant_set(A_cl, X.intersect(KU))
-        self.Xf = Xf  # Store for plotting
+        self.Xf = Xf
         
-        # Define CVXPY variables
+        # CVXPY variables
         x_var = cp.Variable((nx, N + 1))
         u_var = cp.Variable((nu, N))
         x0_param = cp.Parameter(nx)
-        x_ref_param = cp.Parameter(nx)  # For reference tracking
+        x_ref_param = cp.Parameter(nx)  # Reference state parameter
         
-        # Cost function
+        # Cost function - stabilize to origin (trim)
         cost = 0
         for k in range(N):
             cost += cp.quad_form(x_var[:, k] - x_ref_param, Q)
@@ -76,20 +66,16 @@ class MPCControl_yvel(MPCControl_base):
         
         # Constraints
         constraints = []
-        
-        # Initial condition
         constraints.append(x_var[:, 0] == x0_param)
         
         # System dynamics
         for k in range(N):
             constraints.append(x_var[:, k + 1] == self.A @ x_var[:, k] + self.B @ u_var[:, k])
         
-
-
+        # State constraints
         for k in range(N):
             constraints.append(x_var[1, k] <= alpha_max)
             constraints.append(x_var[1, k] >= -alpha_max)
-
         
         # Input constraints 
         for k in range(N):
@@ -99,15 +85,12 @@ class MPCControl_yvel(MPCControl_base):
         # Terminal constraint
         constraints.append(Xf.A @ x_var[:, N] <= Xf.b)
         
-        # Create optimization problem
+        # Optimization problem
         self.ocp = cp.Problem(cp.Minimize(cost), constraints)
         self.x_var = x_var
         self.u_var = u_var
         self.x0_param = x0_param
         self.x_ref_param = x_ref_param
-
-        # YOUR CODE HERE
-        #################################################
 
     def _max_invariant_set(self, A_cl: np.ndarray, X: Polyhedron, max_iter: int = 30) -> Polyhedron:
         """Compute maximal invariant set for autonomous system x+ = A_cl @ x"""
@@ -133,28 +116,32 @@ class MPCControl_yvel(MPCControl_base):
     def get_u(
         self, x0: np.ndarray, x_target: np.ndarray = None, u_target: np.ndarray = None
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        #################################################
-        # YOUR CODE HERE
         
+        # Extract subsystem states if full state provided
         if x0.shape[0] > self.nx:
             x0 = x0[self.x_ids]
         
-        if x_target is not None and x_target.shape[0] > self.nx:
-            x_target = x_target[self.x_ids]
-        
+        # Reference tracking support
         if x_target is None:
             x_ref = self.xs
         else:
+            if x_target.shape[0] != self.nx:
+                x_target = x_target[self.x_ids]
+
             x_ref = x_target
         
+        # Compute delta state and reference (deviation from trim)
         delta_x0 = x0 - self.xs
         delta_x_ref = x_ref - self.xs
         
+        # Set parameter and ref parameter
         self.x0_param.value = delta_x0
         self.x_ref_param.value = delta_x_ref
         
+        # Solve
         self.ocp.solve(solver=cp.CLARABEL, verbose=False)
         
+        # Check if solution is optimal
         if self.ocp.status != cp.OPTIMAL:
             print(f"Warning: Optimization problem status is {self.ocp.status}")
             u0 = np.zeros(self.nu)
@@ -162,14 +149,13 @@ class MPCControl_yvel(MPCControl_base):
             u_traj = np.zeros((self.nu, self.N))
             return u0, x_traj, u_traj
         
+        # Extract solution
         delta_u_opt = self.u_var.value
         delta_x_opt = self.x_var.value
         
+        # Add back trim
         u0 = delta_u_opt[:, 0] + self.us
         x_traj = delta_x_opt + self.xs.reshape(-1, 1)
         u_traj = delta_u_opt + self.us.reshape(-1, 1)
-
-        # YOUR CODE HERE
-        #################################################
 
         return u0, x_traj, u_traj

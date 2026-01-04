@@ -17,7 +17,7 @@ class MPCControl_yvel(MPCControl_base):
         nx, nu = self.nx, self.nu
         N = self.N
         
-        # Tuning matrices [ωx, α, vy]
+        # Tuning matrices [omega_x, alpha, vy]
         Q = np.diag([1.0, 20.0, 50.0])
         R = np.array([[1.0]])
         
@@ -69,10 +69,11 @@ class MPCControl_yvel(MPCControl_base):
         constraints = []
         constraints.append(x_var[:, 0] == x0_param)
         
+        # System dynamics
         for k in range(N):
             constraints.append(x_var[:, k + 1] == self.A @ x_var[:, k] + self.B @ u_var[:, k])
         
-        # State constraints (hard)
+        # State constraints
         for k in range(N):
             constraints.append(x_var[1, k] <= alpha_max)
             constraints.append(x_var[1, k] >= -alpha_max)
@@ -129,6 +130,7 @@ class MPCControl_yvel(MPCControl_base):
         # Solve
         self.ocp.solve(solver=cp.CLARABEL, verbose=False)
         
+        # Check if solution is optimal
         if self.ocp.status != cp.OPTIMAL:
             print(f"Warning: Optimization problem status is {self.ocp.status}")
             u0 = np.zeros(self.nu)
