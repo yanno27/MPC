@@ -70,7 +70,8 @@ class MPCControl_zvel(MPCControl_base):
             constraints.append(u_var[:, k] <= u_max)
         
         # Terminal constraint
-        constraints.append(Xf.A @ x_var[:, N] <= Xf.b)
+        #constraints.append(Xf.A @ x_var[:, N] <= Xf.b)
+        constraints.append(Xf.A @ (x_var[:, N] - x_ref_param) <= Xf.b)
         
         # Optimization problem
         self.ocp = cp.Problem(cp.Minimize(cost), constraints)
@@ -130,7 +131,8 @@ class MPCControl_zvel(MPCControl_base):
         # Check if solution is optimal
         if self.ocp.status != cp.OPTIMAL:
             print(f"Warning: Optimization problem status is {self.ocp.status}")
-            u0 = np.zeros(self.nu)
+            #u0 = np.zeros(self.nu)
+            u0 = self.us.copy()
             x_traj = np.tile(x0.reshape(-1, 1), (1, self.N + 1))
             u_traj = np.zeros((self.nu, self.N))
             return u0, x_traj, u_traj

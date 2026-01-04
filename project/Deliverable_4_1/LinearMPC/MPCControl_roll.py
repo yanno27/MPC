@@ -15,11 +15,10 @@ class MPCControl_roll(MPCControl_base):
         # State and input dimensions
         nx, nu = self.nx, self.nu
         N = self.N
-        
+
         # Tuning matrices [omega_z, gamma]
-        # Increased weight for nonlinear robustness
-        Q = np.diag([200.0, 50.0]) 
-        R = np.array([[1.0]]) 
+        Q = np.diag([200.0, 50.0])
+        R = np.array([[1.0]])
         
         # LQR terminal controller and cost
         K, Qf, _ = dlqr(self.A, self.B, Q, R)
@@ -40,7 +39,7 @@ class MPCControl_roll(MPCControl_base):
         m_u = np.array([u_max, -u_min])
         U = Polyhedron.from_Hrep(M_u, m_u)
         
-        # Compute terminal invariant set
+        # Terminal invariant set
         KU = Polyhedron.from_Hrep(U.A @ K, U.b)
         Xf = self._max_invariant_set(A_cl, X.intersect(KU))
         self.Xf = Xf
@@ -50,7 +49,7 @@ class MPCControl_roll(MPCControl_base):
         u_var = cp.Variable((nu, N))
         x0_param = cp.Parameter(nx)
         x_ref_param = cp.Parameter(nx)  # Reference state parameter
-
+        
         # Cost function with reference tracking
         cost = 0
         for k in range(N):
@@ -72,7 +71,8 @@ class MPCControl_roll(MPCControl_base):
             constraints.append(u_var[:, k] <= u_max)
         
         # Terminal constraint
-        constraints.append(Xf.A @ x_var[:, N] <= Xf.b)
+        #constraints.append(Xf.A @ x_var[:, N] <= Xf.b)
+        constraints.append(Xf.A @ (x_var[:, N] - x_ref_param) <= Xf.b)
         
         # Create optimization problem
         self.ocp = cp.Problem(cp.Minimize(cost), constraints)
@@ -91,7 +91,7 @@ class MPCControl_roll(MPCControl_base):
             F, f = O.A, O.b
             O = Polyhedron.from_Hrep(np.vstack((F, F @ A_cl)), np.concatenate((f, f)))
             O.minHrep(True)
-            _ = O.Vrep  
+            _ = O.Vrep 
             if O == Oprev:
                 converged = True
                 break
@@ -133,7 +133,8 @@ class MPCControl_roll(MPCControl_base):
         # Check if solution is optimal
         if self.ocp.status != cp.OPTIMAL:
             print(f"Warning: Optimization problem status is {self.ocp.status}")
-            u0 = np.zeros(self.nu)
+            #u0 = np.zeros(self.nu)
+            u0 = self.us.copy()
             x_traj = np.tile(x0.reshape(-1, 1), (1, self.N + 1))
             u_traj = np.zeros((self.nu, self.N))
             return u0, x_traj, u_traj

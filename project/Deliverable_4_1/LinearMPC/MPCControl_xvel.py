@@ -54,6 +54,7 @@ class MPCControl_xvel(MPCControl_base):
         # CVXPY variables
         x_var = cp.Variable((nx, N + 1))
         u_var = cp.Variable((nu, N))
+        s_beta = cp.Variable(N, nonneg=True)
         x0_param = cp.Parameter(nx)
         x_ref_param = cp.Parameter(nx)  # For reference tracking
         
@@ -63,6 +64,10 @@ class MPCControl_xvel(MPCControl_base):
             cost += cp.quad_form(x_var[:, k] - x_ref_param, Q)
             cost += cp.quad_form(u_var[:, k], R)
         cost += cp.quad_form(x_var[:, N] - x_ref_param, Qf)
+
+        # Slack penalty
+        rho_beta = 1e5
+        cost += rho_beta * cp.sum(s_beta)
         
         # Constraints
         constraints = []
@@ -74,8 +79,8 @@ class MPCControl_xvel(MPCControl_base):
         
         # State constraints
         for k in range(N):
-            constraints.append(x_var[1, k] <= beta_max)
-            constraints.append(x_var[1, k] >= -beta_max)
+            constraints.append(x_var[1, k] <= beta_max + s_beta[k])
+            constraints.append(x_var[1, k] >= -beta_max - s_beta[k])
         
         # Input constraints
         for k in range(N):
@@ -83,7 +88,8 @@ class MPCControl_xvel(MPCControl_base):
             constraints.append(u_var[:, k] <= u_max)
         
         # Terminal constraint
-        constraints.append(Xf.A @ x_var[:, N] <= Xf.b)
+        #constraints.append(Xf.A @ x_var[:, N] <= Xf.b)
+        constraints.append(Xf.A @ (x_var[:, N] - x_ref_param) <= Xf.b)
         
         # Optimization problem
         self.ocp = cp.Problem(cp.Minimize(cost), constraints)
@@ -144,7 +150,8 @@ class MPCControl_xvel(MPCControl_base):
         # Check if solution is optimal
         if self.ocp.status != cp.OPTIMAL:
             print(f"Warning: Optimization problem status is {self.ocp.status}")
-            u0 = np.zeros(self.nu)
+            #u0 = np.zeros(self.nu)
+            u0 = self.us.copy()
             x_traj = np.tile(x0.reshape(-1, 1), (1, self.N + 1))
             u_traj = np.zeros((self.nu, self.N))
             return u0, x_traj, u_traj

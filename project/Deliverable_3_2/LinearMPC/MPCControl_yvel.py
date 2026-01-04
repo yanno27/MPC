@@ -83,7 +83,8 @@ class MPCControl_yvel(MPCControl_base):
             constraints.append(u_var[:, k] <= u_max)
         
         # Terminal constraint
-        constraints.append(Xf.A @ x_var[:, N] <= Xf.b)
+        #constraints.append(Xf.A @ x_var[:, N] <= Xf.b)
+        constraints.append(Xf.A @ (x_var[:, N] - x_ref_param) <= Xf.b)
         
         # Optimization problem
         self.ocp = cp.Problem(cp.Minimize(cost), constraints)
