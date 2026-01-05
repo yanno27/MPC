@@ -66,8 +66,9 @@ class MPCControl_xvel(MPCControl_base):
         cost += cp.quad_form(x_var[:, N] - x_ref_param, Qf)
 
         # Slack penalty
-        rho_beta = 1e5
-        cost += rho_beta * cp.sum(s_beta)
+        rho_lin = 1e5
+        rho_quad = 1e4
+        cost += rho_lin * cp.sum(s_beta) + rho_quad * cp.sum_squares(s_beta)
         
         # Constraints
         constraints = []
