@@ -18,6 +18,7 @@ class MPCControl_zvel(MPCControl_base):
         self.u_prev = np.zeros(nu)
         self.obs_initialized = False
         self.d_est_history = []
+        self.error_integral = np.zeros(nx)
 
         # costs
         Q = np.array([[100.0]])
@@ -82,6 +83,7 @@ class MPCControl_zvel(MPCControl_base):
         self.x_hat = z[:self.nx].flatten()
         self.d_hat = z[self.nx:].flatten()
         self.d_est_history.append(self.d_hat.copy())
+        self.error_integral += err.flatten() * self.Ts
 
         # steady-state offset compensation for constant d: x_ss = d / (1 - A)
         A_scalar = float(self.A)
