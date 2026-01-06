@@ -1,129 +1,151 @@
 import numpy as np
 import cvxpy as cp
-from scipy.signal import cont2discrete
-from scipy.linalg import solve_discrete_are
-from scipy.signal import place_poles
+from control import dlqr
+from mpt4py import Polyhedron
+
+from .MPCControl_base import MPCControl_base
 
 
-class MPCControl_roll:
-    """Roll MPC with disturbance observer (Deliverable 5.1).
-    States: [gamma, omega_z]
-    Input:  [Mz]
-    """
 
-    x_ids = np.array([5, 2])  # gamma, omega_z
-    u_ids = np.array([3])     # Mz
+class MPCControl_roll(MPCControl_base):
+    x_ids: np.ndarray = np.array([2, 5])
+    u_ids: np.ndarray = np.array([3])
 
-    def __init__(self, A, B, xs, us, Ts, H):
-        self.Ts = Ts
-        self.N = int(H / Ts)
+    def _setup_controller(self) -> None:        
+        # State and input dimensions
+        nx, nu = self.nx, self.nu
+        N = self.N
 
-        # Reduce system
-        Ared = A[np.ix_(self.x_ids, self.x_ids)]
-        Bred = B[np.ix_(self.x_ids, self.u_ids)]
+        # Tuning matrices [omega_z, gamma]
+        Q = np.diag([200.0, 50.0])
+        R = np.array([[1.0]])
+        
+        # LQR terminal controller and cost
+        K, Qf, _ = dlqr(self.A, self.B, Q, R)
+        K = -K
+        A_cl = self.A + self.B @ K
+        
+        # Constraints
+        u_min = -20.0 - self.us[0]
+        u_max = 20.0 - self.us[0]
 
-        # Discretize
-        C = np.eye(Ared.shape[0])
-        D = np.zeros((Ared.shape[0], Bred.shape[1]))
-        Ad, Bd_u, _, _, _ = cont2discrete((Ared, Bred, C, D), Ts)
-        Bd_d = np.eye(Ad.shape[0])  # Full disturbance model
-
-        self.Ad = Ad
-        self.Bd_u = Bd_u
-        self.Bd_d = Bd_d
-
-        nx = Ad.shape[0]
-        nu = Bd_u.shape[1]
-        N = self.N  # Use the stored horizon
-
-        # Costs (gamma, omega_z)
-        Q = np.diag([50.0, 5.0])
-        R = np.diag([1.0])
-
-        P = solve_discrete_are(Ad, Bd_u, Q, R)
-
-        x = cp.Variable((nx, N + 1))
-        v = cp.Variable((nu, N))
-        x0 = cp.Parameter(nx)
-        us_param = cp.Parameter(nu)
-
-        umin = -1.0
-        umax = 1.0
-
+        # State constraints (loose for roll)
+        F_x = np.array([[1, 0], [0, 1], [-1, 0], [0, -1]])
+        f_x = np.array([100, 100, 100, 100])
+        X = Polyhedron.from_Hrep(F_x, f_x)
+        
+        # Input constraints
+        M_u = np.array([[1.0], [-1.0]])
+        m_u = np.array([u_max, -u_min])
+        U = Polyhedron.from_Hrep(M_u, m_u)
+        
+        # Terminal invariant set
+        KU = Polyhedron.from_Hrep(U.A @ K, U.b)
+        Xf = self._max_invariant_set(A_cl, X.intersect(KU))
+        self.Xf = Xf
+        
+        # CVXPY variables
+        x_var = cp.Variable((nx, N + 1))
+        u_var = cp.Variable((nu, N))
+        x0_param = cp.Parameter(nx)
+        x_ref_param = cp.Parameter(nx)  # Reference state parameter
+        
+        # Cost function with reference tracking
         cost = 0
-        constr = [x[:, 0] == x0]
-
         for k in range(N):
-            cost += cp.quad_form(x[:, k], Q) + cp.quad_form(v[:, k], R)
-            constr += [
-                x[:, k + 1] == Ad @ x[:, k] + Bd_u @ v[:, k],
-                umin - us_param <= v[:, k],
-                v[:, k] <= umax - us_param,
-            ]
+            cost += cp.quad_form(x_var[:, k] - x_ref_param, Q) 
+            cost += cp.quad_form(u_var[:, k], R)
+        cost += cp.quad_form(x_var[:, N] - x_ref_param, Qf)  
+        
+        # Constraints
+        constraints = []
+        constraints.append(x_var[:, 0] == x0_param)
+        
+        # System dynamics
+        for k in range(N):
+            constraints.append(x_var[:, k + 1] == self.A @ x_var[:, k] + self.B @ u_var[:, k])
+        
+        # Input constraints
+        for k in range(N):
+            constraints.append(u_var[:, k] >= u_min)
+            constraints.append(u_var[:, k] <= u_max)
+        
+        # Terminal constraint
+        #constraints.append(Xf.A @ x_var[:, N] <= Xf.b)
+        constraints.append(Xf.A @ (x_var[:, N] - x_ref_param) <= Xf.b)
+        
+        # Create optimization problem
+        self.ocp = cp.Problem(cp.Minimize(cost), constraints)
+        self.x_var = x_var
+        self.u_var = u_var
+        self.x0_param = x0_param
+        self.x_ref_param = x_ref_param # Store reference parameter
 
-        cost += cp.quad_form(x[:, N], P)
+    def _max_invariant_set(self, A_cl: np.ndarray, X: Polyhedron, max_iter: int = 30) -> Polyhedron:
+        """Compute maximal invariant set for autonomous system x+ = A_cl @ x"""
+        O = X
+        itr = 1
+        converged = False
+        while itr < max_iter:
+            Oprev = O
+            F, f = O.A, O.b
+            O = Polyhedron.from_Hrep(np.vstack((F, F @ A_cl)), np.concatenate((f, f)))
+            O.minHrep(True)
+            _ = O.Vrep 
+            if O == Oprev:
+                converged = True
+                break
+            itr += 1
+        
+        if not converged:
+            print(f"Warning: Terminal set did not converge after {max_iter} iterations")
+        
+        return O
 
-        self.prob = cp.Problem(cp.Minimize(cost), constr)
-
-        # Observer - augmented state [x; d] where d is nx-dimensional disturbance
-        nd = nx  # Disturbance dimension matches state dimension
-        Aaug = np.block([[Ad, Bd_d], [np.zeros((nd, nx)), np.eye(nd)]])
-        Caug = np.hstack([np.eye(nx), np.zeros((nx, nd))])
-
-        # Observer gain using separation principle
-        # Since we measure all x states, design L directly
-        # L = [L_x; L_d] for state and disturbance estimation
-        L_x = 0.25 * np.eye(nx)  # State observer gain
-        L_d = 0.01 * np.eye(nd)  # Disturbance observer gain (slower)
-        L = np.vstack([L_x, L_d])
-
-        self.L = L
-        self.xhat = np.zeros(nx)
-        self.dhat = np.zeros(nd)
-        self.xs = xs[self.x_ids]
-        self.us = us[self.u_ids]
-        self.x0_param = x0
-        self.us_param = us_param
-        self.u_prev = np.zeros(nu)
-
-    def get_u(self, x0, x_target=None, u_target=None):
-        # Extract roll states from full state vector
-        if x0.shape[0] > self.xhat.shape[0]:
-            x_meas = x0[self.x_ids]
+    def get_u(
+        self, x0: np.ndarray, x_target: np.ndarray = None, u_target: np.ndarray = None
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        
+        # Extract subsystem states if full state is provided
+        if x0.shape[0] > self.nx:
+            x0 = x0[self.x_ids]
+                
+        # Reference tracking support
+        if x_target is None:
+            x_ref = self.xs
         else:
-            x_meas = x0
+            if x_target.shape[0] != self.nx:
+                x_target = x_target[self.x_ids]
 
-        y = x_meas - self.xs  # Measure deviation from trim
-        nx = self.xhat.shape[0]
-        nd = self.dhat.shape[0]
-
-        # No disturbance observer: use measured deviation directly
-        self.xhat = y.copy()
-        self.dhat = np.zeros(nd)
-
-        # Reference (stabilize to zero deviation)
-        xs = np.zeros(nx)
-        us_ff = np.zeros(1)
-
-        self.prob.parameters()[0].value = self.xhat - xs
-        self.prob.parameters()[1].value = us_ff
-        self.prob.solve(solver=cp.OSQP, warm_start=True, verbose=False)
-
-        if self.prob.status != cp.OPTIMAL:
-            print(f"[Roll] Warning: solver status = {self.prob.status}")
-            # Return trim input to avoid constraint violation
-            u0 = self.us
-            x_traj = np.tile(x_meas.reshape(-1, 1), (1, self.N + 1))
-            u_traj = np.tile(self.us.reshape(-1, 1), (1, self.N))
+            x_ref = x_target
+                
+        # Compute delta state and reference (deviation from trim)
+        delta_x0 = x0 - self.xs
+        delta_x_ref = x_ref - self.xs 
+        
+        # Set parameter and ref parameter
+        self.x0_param.value = delta_x0
+        self.x_ref_param.value = delta_x_ref
+        
+        # Solve
+        self.ocp.solve(solver=cp.CLARABEL, verbose=False)
+        
+        # Check if solution is optimal
+        if self.ocp.status != cp.OPTIMAL:
+            print(f"Warning: Optimization problem status is {self.ocp.status}")
+            #u0 = np.zeros(self.nu)
+            u0 = self.us.copy()
+            x_traj = np.tile(x0.reshape(-1, 1), (1, self.N + 1))
+            u_traj = np.zeros((self.nu, self.N))
             return u0, x_traj, u_traj
+        
+        # Extract solution
+        delta_u_opt = self.u_var.value
+        delta_x_opt = self.x_var.value
+        
+        # Add back trim
+        u0 = delta_u_opt[:, 0] + self.us
+        x_traj = delta_x_opt + self.xs.reshape(-1, 1)
+        u_traj = delta_u_opt + self.us.reshape(-1, 1)
 
-        v0 = self.prob.variables()[1].value[:, 0]
-        u0_raw = float(v0 + us_ff)
-        self.u_prev = v0  # Store delta control for next observer update
-
-        # Clamp to respect absolute input constraints
-        u0 = np.clip(u0_raw, -1.0, 1.0)
-
-        x_traj = self.prob.variables()[0].value
-        u_traj = self.prob.variables()[1].value + us_ff.reshape(-1, 1)
         return u0, x_traj, u_traj
