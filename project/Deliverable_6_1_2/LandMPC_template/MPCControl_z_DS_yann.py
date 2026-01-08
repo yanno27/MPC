@@ -10,13 +10,36 @@ class MPCControl_z(MPCControl_base):
     x_ids: np.ndarray = np.array([8, 11])  # [vz, z]
     u_ids: np.ndarray = np.array([2])      # [Pavg]
 
+    @staticmethod
+    def _min_robust_invariant_set(A_cl: np.ndarray, W: Polyhedron, max_iter: int = 40) -> Polyhedron:
+        E = W
+        for _ in range(max_iter):
+            E_next = W + E.affine_map(A_cl)
+            E_next.minHrep()
+            if E_next == E:
+                break
+            E = E_next
+        return E
+
+    @staticmethod
+    def _max_invariant_set(A_cl: np.ndarray, X: Polyhedron, max_iter: int = 40) -> Polyhedron:
+        O = X
+        for _ in range(max_iter):
+            O_prev = O
+            F, f = O.A, O.b
+            O = Polyhedron.from_Hrep(np.vstack((F, F @ A_cl)), np.concatenate((f, f)))
+            O.minHrep()
+            if O == O_prev:
+                break
+        return O
+
     def _setup_controller(self) -> None:
         """Robust tube MPC for z-subsystem with full disturbance W = [-15, 5]."""
         nx, nu, N = self.nx, self.nu, self.N
         print(f"[Tube MPC z] N={N}, Ts={self.Ts}, xs[z]={self.xs[1]:.2f}, us={self.us[0]:.2f}")
 
-        # 1) Ancillary LQR (tube feedback)
-        Q_lqr = np.diag([2.0, 10.0])
+        # 1) Ancillary LQR (tube feedback) - stronger for tighter tracking
+        Q_lqr = np.diag([10.0, 80.0])
         R_lqr = np.array([[0.1]])
         P_lqr = solve_discrete_are(self.A, self.B, Q_lqr, R_lqr)
         self.K = -np.linalg.inv(R_lqr + self.B.T @ P_lqr @ self.B) @ self.B.T @ P_lqr @ self.A
@@ -25,112 +48,98 @@ class MPCControl_z(MPCControl_base):
         eigvals = np.linalg.eigvals(A_cl)
         print(f"  LQR K={self.K.flatten()}, |eig|max={np.max(np.abs(eigvals)):.3f}")
 
-        # 2) Disturbance set W = [-15, 5] (only magnitude matters for box bound)
-        w_max = 15.0
+        # 2) Disturbance set W = [-15, 5] (mapped through B)
+        w_min, w_max = -15.0, 5.0
+        W_w = Polyhedron.from_Hrep(A=np.array([[1.0], [-1.0]]), b=np.array([w_max, -w_min]))
+        W = W_w.affine_map(self.B)
 
-        # 3) RPI bound (box) via elementwise recursion: e_{k+1} = |A_cl| e_k + |B| w_max
-        A_abs = np.abs(A_cl)
-        B_abs = np.abs(self.B)
-        e_bound = np.zeros(nx)
-        for _ in range(100):
-            e_next = A_abs @ e_bound + B_abs.flatten() * w_max
-            if np.allclose(e_next, e_bound, rtol=1e-4, atol=1e-6):
-                break
-            e_bound = e_next
-        # Cap bounds to keep feasibility (avoid over-tightening)
-        e_bound[0] = min(e_bound[0], 1.0)
-        e_bound[1] = min(e_bound[1], 0.5)
-        self.e_bound = e_bound
-        print(f"  RPI box bound: vz ±{e_bound[0]:.3f}, z ±{e_bound[1]:.3f}")
-
-        # Build E as a box polyhedron (outer-approx of true RPI)
-        He = np.array([[1, 0], [-1, 0], [0, 1], [0, -1]])
-        be = np.array([e_bound[0], e_bound[0], e_bound[1], e_bound[1]])
-        E = Polyhedron.from_Hrep(He, be)
+        # 3) Minimal RPI set E for x+ = A_cl x + w, w in W
+        E = self._min_robust_invariant_set(A_cl, W)
+        E.minHrep()
         self.E = E
+        try:
+            e_vz_max = E.support(np.array([1.0, 0.0]))
+            e_vz_min = -E.support(np.array([-1.0, 0.0]))
+            e_z_max = E.support(np.array([0.0, 1.0]))
+            e_z_min = -E.support(np.array([0.0, -1.0]))
+            self.e_bound = np.array([max(abs(e_vz_min), e_vz_max), max(abs(e_z_min), e_z_max)])
+            print(f"  RPI bounds: vz∈[{e_vz_min:.3f},{e_vz_max:.3f}], z∈[{e_z_min:.3f},{e_z_max:.3f}]")
+        except Exception:
+            self.e_bound = np.array([np.nan, np.nan])
+            print("  RPI bounds: (support unavailable)")
 
         # 4) Original constraints (delta coords)
         u_min = 40.0 - self.us[0]
         u_max = 80.0 - self.us[0]
-        vz_min, vz_max = -10.0, 10.0
+        vz_min, vz_max = -20.0, 10.0
         z_min = -self.xs[1]  # z >= 0 -> delta z >= -xs[1]
         z_max = 20.0         # allow initial delta z = 7 within tightened set
 
-        # 5) Tightened constraints using box bounds (X ⊖ E, U ⊖ K E approximated)
-        self.x_tilde_min = np.array([vz_min + e_bound[0], z_min + e_bound[1]])
-        self.x_tilde_max = np.array([vz_max - e_bound[0], z_max - e_bound[1]])
+        X = Polyhedron.from_Hrep(
+            A=np.array([[1.0, 0.0], [-1.0, 0.0], [0.0, 1.0], [0.0, -1.0]]),
+            b=np.array([vz_max, -vz_min, z_max, -z_min]),
+        )
+        U = Polyhedron.from_Hrep(
+            A=np.array([[1.0], [-1.0]]),
+            b=np.array([u_max, -u_min]),
+        )
 
-        Ke_bound = float(np.sum(np.abs(self.K) * e_bound))
-        Ke_bound = min(Ke_bound, 0.05 * (u_max - u_min))  # preserve input authority
-        u_t_min = u_min + Ke_bound
-        u_t_max = u_max - Ke_bound
-        if u_t_min >= u_t_max:
-            mid = (u_min + u_max) / 2
-            u_t_min, u_t_max = mid - 0.5, mid + 0.5
-        self.u_tilde_min, self.u_tilde_max = u_t_min, u_t_max
+        # 5) Tightened constraints using Pontryagin differences
+        X_tilde = X - E
+        X_tilde.minHrep()
+        KE = E.affine_map(self.K)
+        U_tilde = U - KE
+        U_tilde.minHrep()
+        self.X_tilde = X_tilde
+        self.U_tilde = U_tilde
 
-        print(f"  Tightened (box): Δvz∈[{self.x_tilde_min[0]:.2f},{self.x_tilde_max[0]:.2f}], "
-              f"Δz∈[{self.x_tilde_min[1]:.2f},{self.x_tilde_max[1]:.2f}], "
-              f"ΔPavg∈[{u_t_min:.2f},{u_t_max:.2f}]")
-
-        # Store tightened Polyhedra for reporting/plots
-        A_xt = np.array([[1, 0], [-1, 0], [0, 1], [0, -1]])
-        b_xt = np.array([
-            self.x_tilde_max[0],
-            -self.x_tilde_min[0],
-            self.x_tilde_max[1],
-            -self.x_tilde_min[1],
+        self.x_tilde_min = np.array([
+            -X_tilde.support(np.array([-1.0, 0.0])),
+            -X_tilde.support(np.array([0.0, -1.0])),
         ])
-        self.X_tilde = Polyhedron.from_Hrep(A_xt, b_xt)
-        A_ut = np.array([[-1.0], [1.0]])
-        b_ut = np.array([-u_t_min, u_t_max])
-        self.U_tilde = Polyhedron.from_Hrep(A_ut, b_ut)
+        self.x_tilde_max = np.array([
+            X_tilde.support(np.array([1.0, 0.0])),
+            X_tilde.support(np.array([0.0, 1.0])),
+        ])
+        self.u_tilde_min = -U_tilde.support(np.array([-1.0]))
+        self.u_tilde_max = U_tilde.support(np.array([1.0]))
 
-        # 6) MPC cost/terminal
-        Q_mpc = np.diag([5.0, 40.0])  # very aggressive on z to speed descent
-        R_mpc = np.array([[0.001]])   # low input penalty to allow movement
+        print(f"  Tightened: Δvz∈[{self.x_tilde_min[0]:.2f},{self.x_tilde_max[0]:.2f}], "
+              f"Δz∈[{self.x_tilde_min[1]:.2f},{self.x_tilde_max[1]:.2f}], "
+              f"ΔPavg∈[{self.u_tilde_min:.2f},{self.u_tilde_max:.2f}]")
+
+        # 6) Terminal set from tightened constraints
+        X_tilde_and_KU_tilde = X_tilde.intersect(
+            Polyhedron.from_Hrep(U_tilde.A @ self.K, U_tilde.b)
+        )
+        X_f = self._max_invariant_set(A_cl, X_tilde_and_KU_tilde)
+        X_f.minHrep()
+        self.X_f = X_f
+        self.Xf = X_f
+
+        # 7) MPC cost/terminal (aggressive position tracking)
+        Q_mpc = np.diag([50.0, 3000.0])  # Very high weight on position error
+        R_mpc = np.array([[0.5]])         # Moderate input penalty
         P_term = solve_discrete_are(self.A, self.B, Q_mpc, R_mpc)
 
-        # Terminal set: small box subset of tightened bounds
-        vz_f = 0.5
-        z_f = 0.25
-        A_xf = np.array([[1, 0], [-1, 0], [0, 1], [0, -1]])
-        b_xf = np.array([vz_f, vz_f, z_f, z_f])
-        self.X_f = Polyhedron.from_Hrep(A_xf, b_xf)
-        # alias for plotting code expecting Xf
-        self.Xf = self.X_f
-
-        # 7) MPC with tightened constraints
-        x = cp.Variable((nx, N + 1))
-        u = cp.Variable((nu, N))
+        # 8) Tube MPC with tightened constraints
+        z = cp.Variable((nx, N + 1))
+        v = cp.Variable((nu, N))
         x0_param = cp.Parameter(nx)
 
         cost = 0
-        constr = [x[:, 0] == x0_param]
+        constr = [self.E.A @ (x0_param - z[:, 0]) <= self.E.b]
         for k in range(N):
-            cost += cp.quad_form(x[:, k], Q_mpc) + cp.quad_form(u[:, k], R_mpc)
-            constr += [x[:, k + 1] == self.A @ x[:, k] + self.B @ u[:, k]]
-            constr += [
-                x[0, k] <= self.x_tilde_max[0],
-                x[0, k] >= self.x_tilde_min[0],
-                x[1, k] <= self.x_tilde_max[1],
-                x[1, k] >= self.x_tilde_min[1],
-            ]
-            constr += [
-                u[:, k] <= u_t_max,
-                u[:, k] >= u_t_min,
-            ]
-        cost += cp.quad_form(x[:, N], P_term)
-        constr += [
-            x[0, N] <= self.x_tilde_max[0],
-            x[0, N] >= self.x_tilde_min[0],
-            x[1, N] <= self.x_tilde_max[1],
-            x[1, N] >= self.x_tilde_min[1],
-        ]
+            cost += cp.quad_form(z[:, k], Q_mpc) + cp.quad_form(v[:, k], R_mpc)
+            constr += [z[:, k + 1] == self.A @ z[:, k] + self.B @ v[:, k]]
+            constr += [self.X_tilde.A @ z[:, k] <= self.X_tilde.b]
+            constr += [self.U_tilde.A @ v[:, k] <= self.U_tilde.b]
+        cost += cp.quad_form(z[:, N], P_term)
+        constr += [self.X_f.A @ z[:, N] <= self.X_f.b]
 
         self.x0_param = x0_param
-        self.x_var = x
-        self.u_var = u
+        self.x_var = z
+        self.u_var = v
         self.ocp = cp.Problem(cp.Minimize(cost), constr)
 
         print("  MPC setup complete.")
@@ -143,40 +152,59 @@ class MPCControl_z(MPCControl_base):
         delta_x = x_sub - self.xs
 
         self.x0_param.value = delta_x
-
         try:
             self.ocp.solve(
                 solver=cp.OSQP,
                 warm_start=True,
                 verbose=False,
-                max_iter=20000,
-                eps_abs=5e-3,
-                eps_rel=5e-3,
+                max_iter=40000,
+                eps_abs=1e-3,
+                eps_rel=1e-3,
                 polish=False,
             )
             if self.ocp.status in ("optimal", "optimal_inaccurate"):
-                x_nom = self.x_var.value
-                u_nom = self.u_var.value
-                u0_delta = u_nom[:, 0] + self.K @ (delta_x - x_nom[:, 0])
+                z_nom = self.x_var.value
+                v_nom = self.u_var.value
+
+                # Tube MPC control law: u = v* + K(x - z*)
+                u0_delta = v_nom[:, 0] + self.K @ (delta_x - z_nom[:, 0])
                 u0 = np.clip(u0_delta + self.us, 40.0, 80.0)
 
-                # Safety near ground
-                if x_sub[1] < 0.3 or x_sub[0] < -1.0:
-                    u0[...] = 80.0
+                # Safety overrides
+                z_abs = x_sub[1]
+                vz_abs = x_sub[0]
 
-                x_traj = x_nom + self.xs.reshape(-1, 1)
-                u_traj = u_nom + self.us.reshape(-1, 1)
+                # Emergency: near ground or high velocity
+                if z_abs < 0.5 or vz_abs < -3.5:
+                    u0 = np.array([80.0])
+                # Below target significantly - add extra thrust to compensate disturbance
+                elif delta_x[1] < -0.8:  # More than 0.8m below target
+                    # Add bias to counteract steady-state offset from extreme disturbance
+                    u_bias = min(5.0, abs(delta_x[1]) * 3.0)  # Proportional bias
+                    u0 = np.clip(u0 + u_bias, 40.0, 80.0)
+
+                x_traj = z_nom + self.xs.reshape(-1, 1)
+                u_traj = v_nom + self.us.reshape(-1, 1)
                 return u0, x_traj, u_traj
             else:
                 raise RuntimeError(f"MPC infeasible or failed: {self.ocp.status}")
         except Exception as e:
             print(f"MPC failed: {e}")
 
-        # LQR fallback with safety
-        u0_delta = self.K @ delta_x
-        u0 = np.clip(u0_delta + self.us, 40.0, 80.0)
-        if x_sub[1] < 0.5 or x_sub[0] < -1.0:
-            u0[...] = 80.0
+        # LQR fallback with aggressive safety
+        z_abs = x_sub[1]
+        vz_abs = x_sub[0]
+
+        # Emergency ground safety
+        if z_abs < 1.0 or vz_abs < -3.0:
+            u0 = np.array([80.0])
+        # Below target - climb
+        elif delta_x[1] < -0.5:
+            u0 = np.array([75.0])
+        # Normal LQR
+        else:
+            u0_delta = self.K @ delta_x
+            u0 = np.clip(u0_delta + self.us, 40.0, 80.0)
 
         x_traj = np.tile(x_sub.reshape(-1, 1), (1, self.N + 1))
         u_traj = np.tile(u0.reshape(-1, 1), (1, self.N))
