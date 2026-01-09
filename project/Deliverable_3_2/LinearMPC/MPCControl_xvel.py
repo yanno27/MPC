@@ -33,9 +33,9 @@ class MPCControl_xvel(MPCControl_base):
         F_x = np.array([
             [0, 1, 0],   # beta <= beta_max
             [0, -1, 0],  # -beta <= beta_max
-            [1, 0, 0],   # omega_y bounds (loose)
+            [1, 0, 0],   # omega_y bounds 
             [-1, 0, 0],
-            [0, 0, 1],   # vx bounds (loose)
+            [0, 0, 1],   # vx bounds 
             [0, 0, -1]
         ])
         f_x = np.array([beta_max, beta_max, 10, 10, 20, 20])

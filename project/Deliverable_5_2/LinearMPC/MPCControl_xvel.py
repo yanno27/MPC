@@ -6,17 +6,17 @@ from mpt4py import Polyhedron
 from .MPCControl_base import MPCControl_base
 
 
-class MPCControl_yvel(MPCControl_base):
-    x_ids: np.ndarray = np.array([0, 3, 7])
-    u_ids: np.ndarray = np.array([0])
+class MPCControl_xvel(MPCControl_base):
+    x_ids: np.ndarray = np.array([1, 4, 6])
+    u_ids: np.ndarray = np.array([1])
 
     def _setup_controller(self) -> None:
         # State and input dimensions
         nx, nu = self.nx, self.nu
         N = self.N
         
-        # Tuning matrices [omega_x, alpha, vy]
-        Q = np.diag([1.0, 20.0, 50.0])
+        # Tuning matrices [omega_y, beta, vx]
+        Q = np.diag([120.0, 20.0, 50.0])
         R = np.array([[1.0]])
         
         # LQR terminal controller and cost
@@ -25,20 +25,20 @@ class MPCControl_yvel(MPCControl_base):
         A_cl = self.A + self.B @ K
         
         # Constraints
-        alpha_max = 0.1745  # 10 degrees
+        beta_max = 0.1745  # 10 degrees
         u_min = -0.2618 - self.us[0]  # -15 degrees
         u_max = 0.2618 - self.us[0]   # +15 degrees
         
         # State constraints
         F_x = np.array([
-            [0, 1, 0],   # alpha <= alpha_max
-            [0, -1, 0],  # -alpha <= alpha_max
-            [1, 0, 0],   # omega_x bounds 
+            [0, 1, 0],   # beta <= beta_max
+            [0, -1, 0],  # -beta <= beta_max
+            [1, 0, 0],   # omega_y bounds
             [-1, 0, 0],
-            [0, 0, 1],   # vy bounds
+            [0, 0, 1],   # vx bounds 
             [0, 0, -1]
         ])
-        f_x = np.array([alpha_max, alpha_max, 10, 10, 20, 20])
+        f_x = np.array([beta_max, beta_max, 10, 10, 20, 20])
         X = Polyhedron.from_Hrep(F_x, f_x)
         
         # Input constraints
@@ -49,13 +49,14 @@ class MPCControl_yvel(MPCControl_base):
         # Terminal invariant set
         KU = Polyhedron.from_Hrep(U.A @ K, U.b)
         Xf = self._max_invariant_set(A_cl, X.intersect(KU))
-        self.Xf = Xf
+        self.Xf = Xf 
         
         # CVXPY variables
         x_var = cp.Variable((nx, N + 1))
         u_var = cp.Variable((nu, N))
+        s_beta = cp.Variable(N, nonneg=True)
         x0_param = cp.Parameter(nx)
-        x_ref_param = cp.Parameter(nx)  # Reference state parameter
+        x_ref_param = cp.Parameter(nx)  # For reference tracking
         
         # Cost function - stabilize to origin (trim)
         cost = 0
@@ -63,6 +64,11 @@ class MPCControl_yvel(MPCControl_base):
             cost += cp.quad_form(x_var[:, k] - x_ref_param, Q)
             cost += cp.quad_form(u_var[:, k], R)
         cost += cp.quad_form(x_var[:, N] - x_ref_param, Qf)
+
+        # Slack penalty
+        rho_lin = 1e5
+        rho_quad = 1e4
+        cost += rho_lin * cp.sum(s_beta) + rho_quad * cp.sum_squares(s_beta)
         
         # Constraints
         constraints = []
@@ -74,10 +80,10 @@ class MPCControl_yvel(MPCControl_base):
         
         # State constraints
         for k in range(N):
-            constraints.append(x_var[1, k] <= alpha_max)
-            constraints.append(x_var[1, k] >= -alpha_max)
+            constraints.append(x_var[1, k] <= beta_max + s_beta[k])
+            constraints.append(x_var[1, k] >= -beta_max - s_beta[k])
         
-        # Input constraints 
+        # Input constraints
         for k in range(N):
             constraints.append(u_var[:, k] >= u_min)
             constraints.append(u_var[:, k] <= u_max)
@@ -117,11 +123,11 @@ class MPCControl_yvel(MPCControl_base):
     def get_u(
         self, x0: np.ndarray, x_target: np.ndarray = None, u_target: np.ndarray = None
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        
+
         # Extract subsystem states if full state provided
         if x0.shape[0] > self.nx:
             x0 = x0[self.x_ids]
-        
+
         # Reference tracking support
         if x_target is None:
             x_ref = self.xs
@@ -145,7 +151,8 @@ class MPCControl_yvel(MPCControl_base):
         # Check if solution is optimal
         if self.ocp.status != cp.OPTIMAL:
             print(f"Warning: Optimization problem status is {self.ocp.status}")
-            u0 = np.zeros(self.nu)
+            #u0 = np.zeros(self.nu)
+            u0 = self.us.copy()
             x_traj = np.tile(x0.reshape(-1, 1), (1, self.N + 1))
             u_traj = np.zeros((self.nu, self.N))
             return u0, x_traj, u_traj

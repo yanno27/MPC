@@ -35,9 +35,9 @@ class MPCControl_yvel(MPCControl_base):
         F_x = np.array([
             [0, 1, 0],   # alpha <= alpha_max
             [0, -1, 0],  # -alpha <= alpha_max
-            [1, 0, 0],   # omega_x bounds (loose)
+            [1, 0, 0],   # omega_x bounds 
             [-1, 0, 0],
-            [0, 0, 1],   # vy bounds (loose)
+            [0, 0, 1],   # vy bounds
             [0, 0, -1]
         ])
         f_x = np.array([alpha_max, alpha_max, 10, 10, 20, 20])
