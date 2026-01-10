@@ -66,6 +66,8 @@ class MPCControl_zvel(MPCControl_base):
                          [np.zeros((1, 1)), np.ones((1, 1))]])
         Baug = np.vstack([self.B, np.zeros((1, 1))])
         Caug = np.array([[1.0, 0.0]])
+
+        # Choose L so that eig(Aaug - L @ Caug) = {p_x, p_d}.
         p_x = 0.30 
         p_d = 0.50 
 
@@ -74,7 +76,7 @@ class MPCControl_zvel(MPCControl_base):
         l1 = a11 + a22 - (p_x + p_d)
         l2 = (p_x * p_d - (a11 - l1) * a22) / a12
         self.L = np.array([[l1], [l2]])
-
+        
         # Observer memory 
         self.x_hat = np.zeros((1, 1))
         self.d_hat = np.zeros((1, 1))
