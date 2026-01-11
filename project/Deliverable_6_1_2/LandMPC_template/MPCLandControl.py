@@ -5,7 +5,7 @@ from src.rocket import Rocket
 from .MPCControl_roll_Claude import MPCControl_roll
 from .MPCControl_x_Claude import MPCControl_x
 from .MPCControl_y_Claude import MPCControl_y
-from .MPCControl_z_DS import MPCControl_z
+from .MPCControl_z_DS_yann import MPCControl_z
 
 
 class MPCLandControl:
