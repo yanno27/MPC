@@ -5,12 +5,6 @@ from scipy.linalg import solve_continuous_are
 
 
 class NmpcCtrl:
-    """
-    Nonlinear MPC controller for rocket landing.
-    get_u should provide this functionality: u0, x_ol, u_ol, t_ol = nmpc.get_u(t0, x0).
-    - x_ol shape: (12, N+1); u_ol shape: (4, N); t_ol shape: (N+1,)
-    """
-
     def __init__(self, rocket, H: float, xs: np.ndarray, us: np.ndarray):
         """
         Args:
@@ -117,7 +111,7 @@ class NmpcCtrl:
         
         # Input constraints
         for k in range(self.N):
-            # delta1, delta2: [-0.26, 0.26] rad (±15 degrees)
+            # delta1, delta2: [-0.26, 0.26] rad (+-15 degrees)
             opti.subject_to(opti.bounded(-0.26, U[0, k], 0.26))
             opti.subject_to(opti.bounded(-0.26, U[1, k], 0.26))
             
