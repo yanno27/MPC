@@ -13,12 +13,6 @@ class MPCControl_zvel(MPCControl_base):
         # State and input dimensions
         nx, nu = self.nx, self.nu
         N = self.N
-        
-        """nx, nu, N = self.nx, self.nu, self.N
-        assert nx == 1 and nu == 1, (
-            "This controller assumes the reduced z-velocity model is SISO with nx=1, nu=1. "
-            "If your reduction differs, adapt x_ids/u_ids and the target computation."
-        )"""
 
         # Disturbance model
         self.Bd = np.ones((1, 1))
