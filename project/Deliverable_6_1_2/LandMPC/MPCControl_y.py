@@ -6,51 +6,38 @@ from .MPCControl_base import MPCControl_base
 
 
 class MPCControl_y(MPCControl_base):
-    x_ids: np.ndarray = np.array([0, 3, 7, 10])  # ω_x, α, v_y, y
-    u_ids: np.ndarray = np.array([0])  # δ₁
+    x_ids: np.ndarray = np.array([0, 3, 7, 10])  
+    u_ids: np.ndarray = np.array([0])  
 
     def _setup_controller(self) -> None:
-        """Setup MPC for y-position control with soft constraints."""
-        
-        # Dimensions
+        # State and input dimensions
         nx, nu = self.nx, self.nu
         N = self.N
         
-        print(f"Setting up MPC_y: N={N}, Ts={self.Ts}")
-        
-        # --- Tuning matrices ---
-        # States: [ω_x, α, v_y, y]
+        # Tuning matrices [omega_x, alpha, vy, y]
         Q = np.diag([0.1, 5.0, 1.0, 20.0])
         R = np.array([[0.1]])
         
         # Terminal cost from DARE
         P_term = solve_discrete_are(self.A, self.B, Q, R)
         
-        # --- Constraints ---
-        # Angle constraint: |α| ≤ 10° = 0.1745 rad
-        alpha_max = 0.1745
-        
-        # Input constraint: |δ₁| ≤ 15° = 0.2618 rad
-        delta_max = 0.2618
-        u_min = -delta_max - self.us[0]
-        u_max = delta_max - self.us[0]
+        # Constraints
+        alpha_max = 0.1745  # 10 degrees
+        u_min = -0.2618 - self.us[0]  # -15 degrees
+        u_max = 0.2618 - self.us[0]   # +15 degrees
         
         # Soft constraint weight
         slack_weight = 1000.0
         
-        # --- CVXPY Variables ---
+        # CVXPY variables
         x_var = cp.Variable((nx, N + 1))
         u_var = cp.Variable((nu, N))
         x0_param = cp.Parameter(nx)
         x_ref_param = cp.Parameter(nx)
-        
-        # Slack variables for soft state constraints
         slack_alpha = cp.Variable((N, 1), nonneg=True)
         
-        # --- Cost Function ---
+        # Cost function
         cost = 0
-        
-        # Stage costs
         for k in range(N):
             cost += cp.quad_form(x_var[:, k] - x_ref_param, Q)
             cost += cp.quad_form(u_var[:, k], R)
@@ -59,50 +46,40 @@ class MPCControl_y(MPCControl_base):
         # Terminal cost
         cost += cp.quad_form(x_var[:, N] - x_ref_param, P_term)
         
-        # --- Constraints ---
+        # Constraints
         constraints = []
-        
-        # Initial condition
         constraints.append(x_var[:, 0] == x0_param)
         
-        # Dynamics
+        # System dynamics
         for k in range(N):
-            constraints.append(
-                x_var[:, k + 1] == self.A @ x_var[:, k] + self.B @ u_var[:, k]
-            )
+            constraints.append(x_var[:, k + 1] == self.A @ x_var[:, k] + self.B @ u_var[:, k])
         
-        # State constraints (soft on α)
+        # State constraints
         for k in range(N):
             constraints.append(x_var[1, k] <= alpha_max + slack_alpha[k])
             constraints.append(-x_var[1, k] <= alpha_max + slack_alpha[k])
         
-        # Input constraints (hard)
+        # Input constraints
         for k in range(N):
             constraints.append(u_var[:, k] >= u_min)
             constraints.append(u_var[:, k] <= u_max)
         
-        # --- Build Problem ---
+        # Optimization problem
         self.ocp = cp.Problem(cp.Minimize(cost), constraints)
-        
-        # Store variables
         self.x_var = x_var
         self.u_var = u_var
         self.x0_param = x0_param
         self.x_ref_param = x_ref_param
         self.slack_alpha = slack_alpha
-        
-        print("MPC_y setup complete")
 
     def get_u(
         self, x0: np.ndarray, x_target: np.ndarray = None, u_target: np.ndarray = None
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Get control input for current state."""
-        
-        # Extract subsystem states
+        # Extract subsystem states if full state provided
         if x0.shape[0] > self.nx:
             x0 = x0[self.x_ids]
         
-        # Set reference
+        # Reference tracking support
         if x_target is None:
             x_ref = self.xs
         else:
