@@ -29,7 +29,7 @@ class MPCControl_roll(MPCControl_base):
         u_min = -20.0 - self.us[0]
         u_max = 20.0 - self.us[0]
 
-        # State constraints (loose for roll)
+        # State constraints
         F_x = np.array([[1, 0], [0, 1], [-1, 0], [0, -1]])
         f_x = np.array([100, 100, 100, 100])
         X = Polyhedron.from_Hrep(F_x, f_x)

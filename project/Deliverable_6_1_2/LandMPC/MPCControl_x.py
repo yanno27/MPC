@@ -6,109 +6,80 @@ from .MPCControl_base import MPCControl_base
 
 
 class MPCControl_x(MPCControl_base):
-    x_ids: np.ndarray = np.array([1, 4, 6, 9])  # ω_y, β, v_x, x
-    u_ids: np.ndarray = np.array([1])  # δ₂
+    x_ids: np.ndarray = np.array([1, 4, 6, 9]) 
+    u_ids: np.ndarray = np.array([1])  
 
     def _setup_controller(self) -> None:
-        """Setup MPC for x-position control with soft constraints."""
-        
-        # Dimensions
+        # State and input dimensions
         nx, nu = self.nx, self.nu
         N = self.N
         
-        print(f"Setting up MPC_x: N={N}, Ts={self.Ts}")
-        
-        # --- Tuning matrices ---
-        # States: [ω_y, β, v_x, x]
-        # Higher weight on position x, moderate on angle β
+        # Tuning matrices [omega_y, beta, vx]
         Q = np.diag([0.1, 5.0, 1.0, 20.0])
         R = np.array([[0.1]])
         
         # Terminal cost from DARE
         P_term = solve_discrete_are(self.A, self.B, Q, R)
         
-        # --- Constraints ---
-        # Angle constraint: |β| ≤ 10° = 0.1745 rad
-        beta_max = 0.1745
-        
-        # Input constraint: |δ₂| ≤ 15° = 0.2618 rad
-        delta_max = 0.2618
-        u_min = -delta_max - self.us[0]
-        u_max = delta_max - self.us[0]
+        # Constraints
+        beta_max = 0.1745  # 10 degrees
+        u_min = -0.2618 - self.us[0]  # -15 degrees
+        u_max = 0.2618 - self.us[0]   # +15 degrees
         
         # Soft constraint weights
-        slack_weight = 1000.0  # High penalty for constraint violations
+        slack_weight = 1000.0 
         
-        # --- CVXPY Variables ---
+        # CVXPY variables
         x_var = cp.Variable((nx, N + 1))
         u_var = cp.Variable((nu, N))
         x0_param = cp.Parameter(nx)
         x_ref_param = cp.Parameter(nx)
-        
-        # Slack variables for soft state constraints
         slack_beta = cp.Variable((N, 1), nonneg=True)
         
-        # --- Cost Function ---
+        # Cost function
         cost = 0
-        
-        # Stage costs
         for k in range(N):
-            # Tracking cost
             cost += cp.quad_form(x_var[:, k] - x_ref_param, Q)
             cost += cp.quad_form(u_var[:, k], R)
-            
-            # Slack penalty
             cost += slack_weight * cp.sum_squares(slack_beta[k])
         
         # Terminal cost
         cost += cp.quad_form(x_var[:, N] - x_ref_param, P_term)
         
-        # --- Constraints ---
+        # Constraints
         constraints = []
-        
-        # Initial condition
         constraints.append(x_var[:, 0] == x0_param)
         
-        # Dynamics
+        # System ynamics
         for k in range(N):
-            constraints.append(
-                x_var[:, k + 1] == self.A @ x_var[:, k] + self.B @ u_var[:, k]
-            )
+            constraints.append(x_var[:, k + 1] == self.A @ x_var[:, k] + self.B @ u_var[:, k])
         
-        # State constraints (soft on β)
+        # State constraints 
         for k in range(N):
-            # β ≤ β_max + slack
             constraints.append(x_var[1, k] <= beta_max + slack_beta[k])
-            # -β ≤ β_max + slack
             constraints.append(-x_var[1, k] <= beta_max + slack_beta[k])
         
-        # Input constraints (hard)
+        # Input constraints
         for k in range(N):
             constraints.append(u_var[:, k] >= u_min)
             constraints.append(u_var[:, k] <= u_max)
         
-        # --- Build Problem ---
+        # Optimization problem
         self.ocp = cp.Problem(cp.Minimize(cost), constraints)
-        
-        # Store variables
         self.x_var = x_var
         self.u_var = u_var
         self.x0_param = x0_param
         self.x_ref_param = x_ref_param
         self.slack_beta = slack_beta
-        
-        print("MPC_x setup complete")
 
     def get_u(
         self, x0: np.ndarray, x_target: np.ndarray = None, u_target: np.ndarray = None
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Get control input for current state."""
-        
         # Extract subsystem states if full state provided
         if x0.shape[0] > self.nx:
             x0 = x0[self.x_ids]
         
-        # Set reference (trim or target)
+        # Reference tracking support
         if x_target is None:
             x_ref = self.xs
         else:
@@ -155,7 +126,7 @@ class MPCControl_x(MPCControl_base):
         except Exception as e:
             print(f"MPC_x exception: {e}")
         
-        # Fallback: zero input
+        # Fallback
         u0 = np.zeros(self.nu)
         x_traj = np.tile(x0.reshape(-1, 1), (1, self.N + 1))
         u_traj = np.zeros((self.nu, self.N))
