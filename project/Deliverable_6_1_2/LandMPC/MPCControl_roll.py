@@ -6,48 +6,39 @@ from .MPCControl_base import MPCControl_base
 
 
 class MPCControl_roll(MPCControl_base):
-    x_ids: np.ndarray = np.array([2, 5])  # ω_z, γ (roll angle)
-    u_ids: np.ndarray = np.array([3])  # P_diff
+    x_ids: np.ndarray = np.array([2, 5]) 
+    u_ids: np.ndarray = np.array([3]) 
 
     def _setup_controller(self) -> None:
-        """Setup MPC for roll angle control with soft constraints."""
-        
-        # Dimensions
+        # State and input dimensions
         nx, nu = self.nx, self.nu
         N = self.N
         
-        print(f"Setting up MPC_roll: N={N}, Ts={self.Ts}")
-        
-        # --- Tuning matrices ---
-        # States: [ω_z, γ]
-        # Higher weight on roll angle γ
+        # Tuning matrices [omega_z, gamma]
         Q = np.diag([0.5, 10.0])
         R = np.array([[0.1]])
         
         # Terminal cost from DARE
         P_term = solve_discrete_are(self.A, self.B, Q, R)
         
-        # --- Constraints ---
-        # Input constraint: |P_diff| ≤ 20%
+        # Constraints
         u_min = -20.0 - self.us[0]
         u_max = 20.0 - self.us[0]
         
-        # Soft constraint weight (less critical than x,y)
+        # Soft constraint weight
         slack_weight = 500.0
         
-        # --- CVXPY Variables ---
+        # CVXPY variables
         x_var = cp.Variable((nx, N + 1))
         u_var = cp.Variable((nu, N))
         x0_param = cp.Parameter(nx)
         x_ref_param = cp.Parameter(nx)
         
-        # Slack for state constraints (optional, for robustness)
+        # Slack state constraints
         slack_state = cp.Variable((N, 1), nonneg=True)
         
-        # --- Cost Function ---
+        # Cost function     
         cost = 0
-        
-        # Stage costs
         for k in range(N):
             cost += cp.quad_form(x_var[:, k] - x_ref_param, Q)
             cost += cp.quad_form(u_var[:, k], R)
@@ -56,51 +47,41 @@ class MPCControl_roll(MPCControl_base):
         # Terminal cost
         cost += cp.quad_form(x_var[:, N] - x_ref_param, P_term)
         
-        # --- Constraints ---
+        # Constraints
         constraints = []
-        
-        # Initial condition
         constraints.append(x_var[:, 0] == x0_param)
         
-        # Dynamics
+        # System dynamics
         for k in range(N):
-            constraints.append(
-                x_var[:, k + 1] == self.A @ x_var[:, k] + self.B @ u_var[:, k]
-            )
+            constraints.append(x_var[:, k + 1] == self.A @ x_var[:, k] + self.B @ u_var[:, k])
         
-        # Input constraints (hard)
+        # Input constraints
         for k in range(N):
             constraints.append(u_var[:, k] >= u_min)
             constraints.append(u_var[:, k] <= u_max)
         
-        # Loose state bounds with slack (to avoid infeasibility)
-        omega_z_max = 5.0  # rad/s (loose bound)
+        # Slack constraints
+        omega_z_max = 5.0  # rad/s 
         for k in range(N):
             constraints.append(x_var[0, k] <= omega_z_max + slack_state[k])
             constraints.append(-x_var[0, k] <= omega_z_max + slack_state[k])
         
-        # --- Build Problem ---
+        # Create optimization problem
         self.ocp = cp.Problem(cp.Minimize(cost), constraints)
-        
-        # Store variables
         self.x_var = x_var
         self.u_var = u_var
         self.x0_param = x0_param
         self.x_ref_param = x_ref_param
         self.slack_state = slack_state
-        
-        print("MPC_roll setup complete")
 
     def get_u(
         self, x0: np.ndarray, x_target: np.ndarray = None, u_target: np.ndarray = None
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Get control input for current state."""
-        
-        # Extract subsystem states
+        # Extract subsystem states if full state is provided
         if x0.shape[0] > self.nx:
             x0 = x0[self.x_ids]
         
-        # Set reference
+        # Reference tracking support
         if x_target is None:
             x_ref = self.xs
         else:
@@ -108,11 +89,11 @@ class MPCControl_roll(MPCControl_base):
                 x_target = x_target[self.x_ids]
             x_ref = x_target
         
-        # Compute deviations
+        # Compute delta state and reference (deviation from trim)
         delta_x0 = x0 - self.xs
         delta_x_ref = x_ref - self.xs
         
-        # Set parameters
+        # Set parameter and ref parameter
         self.x0_param.value = delta_x0
         self.x_ref_param.value = delta_x_ref
         
